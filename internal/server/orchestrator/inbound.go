@@ -250,6 +250,48 @@ func applyApiKeyModelMapping(inbound *PersistentInboundTransformer) pipeline.Mid
 	})
 }
 
+// resolveAxonHubModel creates a middleware that resolves AxonHub Models to channel+model candidates.
+// This runs after API key model mapping and before channel selection.
+func resolveAxonHubModel(inbound *PersistentInboundTransformer) pipeline.Middleware {
+	return pipeline.OnLlmRequest("resolve-axonhub-model", func(ctx context.Context, llmRequest *llm.Request) (*llm.Request, error) {
+		// Skip if already resolved
+		if inbound.state.AxonHubModel != nil || len(inbound.state.ChannelModelCandidates) > 0 {
+			return llmRequest, nil
+		}
+
+		// Skip if ModelResolver is not available
+		if inbound.state.ModelResolver == nil {
+			return llmRequest, nil
+		}
+
+		// Try to resolve AxonHub Model
+		candidates, axonhubModel, err := inbound.state.ModelResolver.Resolve(ctx, llmRequest.Model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve AxonHub Model: %w", err)
+		}
+
+		// If no AxonHub Model found, continue with legacy flow
+		if axonhubModel == nil {
+			log.Debug(ctx, "No AxonHub Model found, using legacy channel selection",
+				log.String("model", llmRequest.Model))
+
+			return llmRequest, nil
+		}
+
+		// Store AxonHub Model and candidates in state
+		inbound.state.AxonHubModel = axonhubModel
+		inbound.state.ChannelModelCandidates = candidates
+
+		if len(candidates) > 0 {
+			log.Debug(ctx, "Resolved AxonHub Model to candidates",
+				log.String("model", llmRequest.Model),
+				log.Int("candidate_count", len(candidates)))
+		}
+
+		return llmRequest, nil
+	})
+}
+
 // selectChannels creates a middleware that selects available channels for the model.
 // This is the second step in the inbound pipeline, moved from outbound transformer.
 // If no valid channels are found, it returns ErrInvalidModel to fail fast.
@@ -260,50 +302,102 @@ func selectChannels(inbound *PersistentInboundTransformer) pipeline.Middleware {
 			return llmRequest, nil
 		}
 
-		selector := inbound.state.ChannelSelector
-
-		if profile := GetActiveProfile(inbound.state.APIKey); profile != nil {
-			// 先应用 ChannelIDs 过滤
-			if len(profile.ChannelIDs) > 0 {
-				selector = NewSelectedChannelsSelector(selector, profile.ChannelIDs)
-			}
-
-			// 再应用 ChannelTags 过滤（链式装饰器，与 IDs 取交集）
-			if len(profile.ChannelTags) > 0 {
-				selector = NewTagsFilterSelector(selector, profile.ChannelTags)
-			}
+		// If we have AxonHub Model candidates, use them instead of legacy selection
+		if len(inbound.state.ChannelModelCandidates) > 0 {
+			return selectChannelsFromCandidates(ctx, inbound, llmRequest)
 		}
 
-		// 应用 Google 原生工具过滤（仅对 Gemini 原生 API 格式生效）
-		if inbound.APIFormat() == llm.APIFormatGeminiContents {
-			selector = NewGoogleNativeToolsSelector(selector)
-		}
-
-		// 应用 Anthropic 原生工具过滤（对所有 API 格式生效）
-		// 无论通过 OpenAI 还是 Anthropic 格式入口，只要包含 web_search 工具，
-		// 都需要优先路由到支持 Anthropic 原生工具的渠道
-		selector = NewAnthropicNativeToolsSelector(selector)
-
-		if inbound.state.LoadBalancer != nil {
-			selector = NewLoadBalancedSelector(selector, inbound.state.LoadBalancer)
-		}
-
-		channels, err := selector.Select(ctx, llmRequest)
-		if err != nil {
-			return nil, err
-		}
-
-		log.Debug(ctx, "selected channels",
-			log.Any("channels", channels),
-			log.Any("model", llmRequest.Model),
-		)
-
-		if len(channels) == 0 {
-			return nil, fmt.Errorf("%w: no valid channels found for model %s", biz.ErrInvalidModel, llmRequest.Model)
-		}
-
-		inbound.state.Channels = channels
-
-		return llmRequest, nil
+		// Legacy channel selection
+		return selectChannelsLegacy(ctx, inbound, llmRequest)
 	})
+}
+
+// selectChannelsFromCandidates handles channel selection when AxonHub Model candidates are available.
+func selectChannelsFromCandidates(ctx context.Context, inbound *PersistentInboundTransformer, llmRequest *llm.Request) (*llm.Request, error) {
+	candidates := inbound.state.ChannelModelCandidates
+
+	// Apply API Key Profile filtering
+	if profile := GetActiveProfile(inbound.state.APIKey); profile != nil {
+		// Filter by ChannelIDs
+		if len(profile.ChannelIDs) > 0 {
+			candidates = filterCandidatesByChannelIDs(candidates, profile.ChannelIDs)
+		}
+
+		// Filter by ChannelTags
+		if len(profile.ChannelTags) > 0 {
+			candidates = filterCandidatesByChannelTags(candidates, profile.ChannelTags)
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("%w: no valid candidates after profile filtering for model %s", biz.ErrInvalidModel, llmRequest.Model)
+	}
+
+	// Sort candidates by priority and load balancer score
+	if inbound.state.LoadBalancer != nil {
+		candidates = sortCandidatesByPriorityAndScore(ctx, candidates, inbound.state.LoadBalancer)
+	}
+
+	// Store sorted candidates
+	inbound.state.ChannelModelCandidates = candidates
+
+	// Extract channels for compatibility with existing retry logic
+	channels := extractChannelsFromCandidates(candidates)
+	inbound.state.Channels = channels
+
+	log.Debug(ctx, "selected channels from AxonHub Model candidates",
+		log.Int("candidate_count", len(candidates)),
+		log.Int("channel_count", len(channels)),
+		log.String("model", llmRequest.Model))
+
+	return llmRequest, nil
+}
+
+// selectChannelsLegacy handles legacy channel selection when no AxonHub Model is found.
+func selectChannelsLegacy(ctx context.Context, inbound *PersistentInboundTransformer, llmRequest *llm.Request) (*llm.Request, error) {
+	selector := inbound.state.ChannelSelector
+
+	if profile := GetActiveProfile(inbound.state.APIKey); profile != nil {
+		// 先应用 ChannelIDs 过滤
+		if len(profile.ChannelIDs) > 0 {
+			selector = NewSelectedChannelsSelector(selector, profile.ChannelIDs)
+		}
+
+		// 再应用 ChannelTags 过滤（链式装饰器，与 IDs 取交集）
+		if len(profile.ChannelTags) > 0 {
+			selector = NewTagsFilterSelector(selector, profile.ChannelTags)
+		}
+	}
+
+	// 应用 Google 原生工具过滤（仅对 Gemini 原生 API 格式生效）
+	if inbound.APIFormat() == llm.APIFormatGeminiContents {
+		selector = NewGoogleNativeToolsSelector(selector)
+	}
+
+	// 应用 Anthropic 原生工具过滤（对所有 API 格式生效）
+	// 无论通过 OpenAI 还是 Anthropic 格式入口，只要包含 web_search 工具，
+	// 都需要优先路由到支持 Anthropic 原生工具的渠道
+	selector = NewAnthropicNativeToolsSelector(selector)
+
+	if inbound.state.LoadBalancer != nil {
+		selector = NewLoadBalancedSelector(selector, inbound.state.LoadBalancer)
+	}
+
+	channels, err := selector.Select(ctx, llmRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debug(ctx, "selected channels (legacy)",
+		log.Any("channels", channels),
+		log.Any("model", llmRequest.Model),
+	)
+
+	if len(channels) == 0 {
+		return nil, fmt.Errorf("%w: no valid channels found for model %s", biz.ErrInvalidModel, llmRequest.Model)
+	}
+
+	inbound.state.Channels = channels
+
+	return llmRequest, nil
 }

@@ -345,10 +345,37 @@ func (p *PersistentOutboundTransformer) TransformRequest(ctx context.Context, ll
 		log.Any("model", llmRequest.Model),
 	)
 
-	model, err := p.state.CurrentChannel.ChooseModel(llmRequest.Model)
-	if err != nil {
-		log.Error(ctx, "Failed to choose model", log.Cause(err))
-		return nil, err
+	// If we have AxonHub Model candidates, use pre-resolved model
+	var (
+		model string
+		err   error
+	)
+
+	if len(p.state.ChannelModelCandidates) > 0 {
+		// Find the candidate for the current channel
+		candidate := findCandidateForChannel(p.state.ChannelModelCandidates, p.state.CurrentChannel)
+		if candidate != nil {
+			p.state.CurrentCandidate = candidate
+			model = candidate.ActualModel
+			log.Debug(ctx, "using pre-resolved model from AxonHub Model candidate",
+				log.String("request_model", candidate.RequestModel),
+				log.String("actual_model", candidate.ActualModel),
+				log.Int("priority", candidate.Priority))
+		} else {
+			// Fallback to legacy model resolution
+			model, err = p.state.CurrentChannel.ChooseModel(llmRequest.Model)
+			if err != nil {
+				log.Error(ctx, "Failed to choose model", log.Cause(err))
+				return nil, err
+			}
+		}
+	} else {
+		// Legacy: use channel.ChooseModel()
+		model, err = p.state.CurrentChannel.ChooseModel(llmRequest.Model)
+		if err != nil {
+			log.Error(ctx, "Failed to choose model", log.Cause(err))
+			return nil, err
+		}
 	}
 
 	llmRequest.Model = model

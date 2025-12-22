@@ -22,6 +22,18 @@ import (
 	"github.com/looplj/axonhub/internal/pkg/xmap"
 )
 
+// ChannelModelEntry represents a model that the channel can handle.
+type ChannelModelEntry struct {
+	// RequestModel is the model name that can be used in requests
+	RequestModel string
+
+	// ActualModel is the model that will be sent to the provider
+	ActualModel string
+
+	// Source indicates how this model is supported
+	Source string // "direct", "prefix", "auto_trim", "mapping"
+}
+
 type Channel struct {
 	*ent.Channel
 
@@ -42,6 +54,9 @@ type Channel struct {
 
 	// chooseModelCache caches ChooseModel results
 	chooseModelCache *xmap.Map[string, chooseModelResult]
+
+	// modelEntriesCache caches GetModelEntries results
+	modelEntriesCache []ChannelModelEntry
 }
 
 // chooseModelResult stores the cached result of ChooseModel.

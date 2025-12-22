@@ -19,6 +19,7 @@ import (
 func NewChatCompletionOrchestrator(
 	channelService *biz.ChannelService,
 	requestService *biz.RequestService,
+	modelService *biz.ModelService,
 	httpClient *httpclient.HttpClient,
 	inbound transformer.Inbound,
 	systemService *biz.SystemService,
@@ -41,6 +42,7 @@ func NewChatCompletionOrchestrator(
 		Inbound:         inbound,
 		RequestService:  requestService,
 		ChannelService:  channelService,
+		ModelService:    modelService,
 		SystemService:   systemService,
 		UsageLogService: usageLogService,
 		Middlewares: []pipeline.Middleware{
@@ -48,6 +50,7 @@ func NewChatCompletionOrchestrator(
 		},
 		PipelineFactory:      pipeline.NewFactory(httpClient),
 		ModelMapper:          NewModelMapper(),
+		ModelResolver:        NewModelResolver(modelService, channelService),
 		channelSelector:      NewDefaultSelector(channelService),
 		selectedChannelIds:   []int{},
 		connectionTracker:    connectionTracker,
@@ -61,11 +64,13 @@ type ChatCompletionOrchestrator struct {
 	Inbound         transformer.Inbound
 	RequestService  *biz.RequestService
 	ChannelService  *biz.ChannelService
+	ModelService    *biz.ModelService
 	SystemService   *biz.SystemService
 	UsageLogService *biz.UsageLogService
 	Middlewares     []pipeline.Middleware
 	PipelineFactory *pipeline.Factory
 	ModelMapper     *ModelMapper
+	ModelResolver   *ModelResolver
 
 	// The runtime fields.
 
@@ -145,6 +150,7 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 		ChannelSelector: processor.channelSelector,
 		LoadBalancer:    loadBalancer,
 		ModelMapper:     processor.ModelMapper,
+		ModelResolver:   processor.ModelResolver,
 		Proxy:           processor.proxy,
 		ChannelIndex:    0,
 	}
@@ -170,6 +176,7 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 	// Add inbound middlewares (executed after inbound.TransformRequest)
 	middlewares = append(middlewares,
 		applyApiKeyModelMapping(inbound),
+		resolveAxonHubModel(inbound),
 		selectChannels(inbound),
 		persistRequest(inbound),
 	)

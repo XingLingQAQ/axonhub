@@ -18,6 +18,7 @@ type OpenAIHandlersParams struct {
 
 	ChannelService  *biz.ChannelService
 	RequestService  *biz.RequestService
+	ModelService    *biz.ModelService
 	SystemService   *biz.SystemService
 	UsageLogService *biz.UsageLogService
 	HttpClient      *httpclient.HttpClient
@@ -36,6 +37,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
 				params.RequestService,
+				params.ModelService,
 				params.HttpClient,
 				openai.NewInboundTransformer(),
 				params.SystemService,
@@ -46,6 +48,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
 				params.RequestService,
+				params.ModelService,
 				params.HttpClient,
 				responses.NewInboundTransformer(),
 				params.SystemService,
@@ -56,6 +59,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
 				params.RequestService,
+				params.ModelService,
 				params.HttpClient,
 				openai.NewEmbeddingInboundTransformer(),
 				params.SystemService,

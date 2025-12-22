@@ -18,6 +18,7 @@ type GeminiHandlersParams struct {
 
 	ChannelService  *biz.ChannelService
 	RequestService  *biz.RequestService
+	ModelService    *biz.ModelService
 	SystemService   *biz.SystemService
 	UsageLogService *biz.UsageLogService
 	HttpClient      *httpclient.HttpClient
@@ -33,6 +34,7 @@ func NewGeminiHandlers(params GeminiHandlersParams) *GeminiHandlers {
 			orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
 				params.RequestService,
+				params.ModelService,
 				params.HttpClient,
 				gemini.NewInboundTransformer(),
 				params.SystemService,

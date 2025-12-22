@@ -491,3 +491,90 @@ func (svc *ChannelService) ChooseChannels(
 
 	return channels, nil
 }
+
+// GetModelEntries returns all models this channel can handle.
+// This unifies:
+// - SupportedModels (direct models)
+// - ExtraModelPrefix (prefixed models)
+// - AutoTrimedModelPrefixes (auto-trimmed models)
+// - ModelMappings (mapped models)
+// The result is cached for performance.
+func (ch *Channel) GetModelEntries() []ChannelModelEntry {
+	// Return cached result if available
+	if ch.modelEntriesCache != nil {
+		return ch.modelEntriesCache
+	}
+
+	entries := make([]ChannelModelEntry, 0)
+	seen := make(map[string]bool)
+
+	// 1. Direct models from SupportedModels
+	for _, model := range ch.SupportedModels {
+		if !seen[model] {
+			entries = append(entries, ChannelModelEntry{
+				RequestModel: model,
+				ActualModel:  model,
+				Source:       "direct",
+			})
+			seen[model] = true
+		}
+	}
+
+	if ch.Settings == nil {
+		ch.modelEntriesCache = entries
+		return entries
+	}
+
+	// 2. Prefixed models (ExtraModelPrefix)
+	if ch.Settings.ExtraModelPrefix != "" {
+		prefix := ch.Settings.ExtraModelPrefix
+		for _, model := range ch.SupportedModels {
+			prefixedModel := prefix + "/" + model
+			if !seen[prefixedModel] {
+				entries = append(entries, ChannelModelEntry{
+					RequestModel: prefixedModel,
+					ActualModel:  model,
+					Source:       "prefix",
+				})
+				seen[prefixedModel] = true
+			}
+		}
+	}
+
+	// 3. Auto-trimmed models (AutoTrimedModelPrefixes)
+	for _, prefix := range ch.Settings.AutoTrimedModelPrefixes {
+		for _, model := range ch.SupportedModels {
+			// Only process models that have the prefix
+			if strings.HasPrefix(model, prefix+"/") {
+				trimmedModel := strings.TrimPrefix(model, prefix+"/")
+				if !seen[trimmedModel] {
+					entries = append(entries, ChannelModelEntry{
+						RequestModel: trimmedModel,
+						ActualModel:  model,
+						Source:       "auto_trim",
+					})
+					seen[trimmedModel] = true
+				}
+			}
+		}
+	}
+
+	// 4. Model mappings
+	for _, mapping := range ch.Settings.ModelMappings {
+		// Only add if the target model is supported
+		if slices.Contains(ch.SupportedModels, mapping.To) {
+			if !seen[mapping.From] {
+				entries = append(entries, ChannelModelEntry{
+					RequestModel: mapping.From,
+					ActualModel:  mapping.To,
+					Source:       "mapping",
+				})
+				seen[mapping.From] = true
+			}
+		}
+	}
+
+	ch.modelEntriesCache = entries
+
+	return entries
+}

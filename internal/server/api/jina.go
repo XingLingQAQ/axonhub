@@ -15,6 +15,7 @@ type JinaHandlersParams struct {
 
 	ChannelService  *biz.ChannelService
 	RequestService  *biz.RequestService
+	ModelService    *biz.ModelService
 	SystemService   *biz.SystemService
 	UsageLogService *biz.UsageLogService
 	HttpClient      *httpclient.HttpClient
@@ -26,6 +27,7 @@ func NewJinaHandlers(params JinaHandlersParams) *JinaHandlers {
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
 				params.RequestService,
+				params.ModelService,
 				params.HttpClient,
 				jina.NewRerankInboundTransformer(),
 				params.SystemService,
@@ -36,6 +38,7 @@ func NewJinaHandlers(params JinaHandlersParams) *JinaHandlers {
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
 				params.RequestService,
+				params.ModelService,
 				params.HttpClient,
 				jina.NewEmbeddingInboundTransformer(),
 				params.SystemService,
